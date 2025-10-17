@@ -1,0 +1,111 @@
+name: AgenticAI Code Quality
+
+on: [push]
+
+jobs:
+  build:
+    name: Run Quality Checks
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uv venv
+        source .venv/bin/activate
+        uv pip install black pylint mypy bandit pytest
+
+    - name: Cache uv
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/uv
+        key: ${{ runner.os }}-uv-${{ hashFiles('**/uv.lock') }}
+
+    - name: Check if .env file is committed
+      run: |
+        if git ls-files | grep -q '\.env'; then
+          echo ".env file detected! Remove it before pushing."
+          exit 1
+        else
+          echo "No .env file found in git."
+        fi
+
+    - name: Check for required project files
+      run: |
+        required_files=(".gitignore" ".dockerignore" "Dockerfile")
+        for file in "${required_files[@]}"; do
+          if [ ! -f "$file" ]; then
+            echo "Missing required file: $file"
+            exit 1
+          fi
+        done
+        echo "All required project files are present."
+
+    - name: Check formatting with Black
+      run: |
+        source .venv/bin/activate
+        uv run black --check .
+
+    - name: Run Pylint (code analysis)
+      run: |
+        source .venv/bin/activate
+        uv run pylint $(git ls-files '*.py')
+
+    - name: Type checking with mypy
+      run: |
+        source .venv/bin/activate
+        uv run mypy .
+
+    - name: Security scan with Bandit
+      run: |
+        source .venv/bin/activate
+        uv run bandit -r .
+
+    - name: Run code compilation test
+      run: |
+        source .venv/bin/activate
+        for file in $(git ls-files '*.py'); do
+          echo "Testing execution of $file"
+          python -m py_compile "$file" || exit 1
+        done
+        echo "All Python files executed successfully."
+
+    - name: Check for missing docstrings and type hints
+      run: |
+        source .venv/bin/activate
+        missing_docstrings=0
+        missing_types=0
+
+        for file in $(git ls-files '*.py'); do
+          # Check docstrings
+          if uv run pylint --disable=all --enable=missing-function-docstring "$file" | grep -q "missing-function-docstring"; then
+            echo "Missing docstring in $file"
+            missing_docstrings=1
+          fi
+
+          # Check type hints
+          if uv run pylint --disable=all --enable=missing-type-hint "$file" | grep -q "missing-type-hint"; then
+            echo "Missing type hints in $file"
+            missing_types=1
+          fi
+        done
+
+        if [ $missing_docstrings -eq 1 ] || [ $missing_types -eq 1 ]; then
+          echo "Docstring or type hint check failed."
+          exit 1
+        else
+          echo "All functions have docstrings and type hints."
+        fi
